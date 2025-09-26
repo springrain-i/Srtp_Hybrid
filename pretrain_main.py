@@ -30,6 +30,12 @@ def main():
     parser.add_argument('--clip_value', type=float, default=1, help='clip_value')
     parser.add_argument('--lr_scheduler', type=str, default='CosineAnnealingLR',
                         help='lr_scheduler: CosineAnnealingLR, ExponentialLR, StepLR, MultiStepLR, CyclicLR')
+    parser.add_argument('--use_lr_scheduler', type=bool, default=False, help='whether to use learning rate scheduler')
+    
+    # 分类任务参数
+    parser.add_argument('--num_classes', type=int, default=5, help='number of classes (2 for binary, 5 for multiclass)')
+    parser.add_argument('--task_type', type=str, default='multiclass', choices=['binary', 'multiclass'], 
+                        help='task type: binary or multiclass')
 
     # parser.add_argument('--project_mode', type=str, default='cnn', help='project_mode')
     parser.add_argument('--dropout', type=float, default=0.1, help='dropout')
@@ -43,7 +49,7 @@ def main():
     parser.add_argument('--need_mask', type=bool, default=True, help='need_mask')
     parser.add_argument('--mask_ratio', type=float, default=0.5, help='mask_ratio')
 
-    parser.add_argument('--dataset_dir', type=str, default='data/shu_datasets/processed',
+    parser.add_argument('--dataset_dir', type=str, default='data/BCIC2020_datasets/processed',
                         help='dataset_dir')
     parser.add_argument('--model_dir',   type=str,   default='model_dir', help='model_dir')
     
@@ -57,6 +63,7 @@ def main():
     parser.add_argument('--warmup_epochs', type=int, default=5, help='warmup epochs for mamba layers')
     parser.add_argument('--custom_depths', type=str, default=None, 
                         help='custom layer depths in format "3,3,4,3" (comma-separated)')
+    parser.add_argument('--stage_types',type=str, default='mamba,mamba,atten,atten',help='stage types for each stage, comma-separated, e.g., "mamba,mamba,atten,atten"')
     
     # 后边调整
     parser.add_argument('--in_chans', type=int, default=32, help='in_chans')
@@ -67,11 +74,17 @@ def main():
     print(len(pretrained_dataset))
     load_dataset = shu_dataset.LoadDataset(params)
     data_loader = load_dataset.get_data_loader()
-    # 处理自定义层数
+    # 处理自定义层数和stage类型
     custom_depths = None
+    stage_types = None
+    
     if params.custom_depths is not None:
         custom_depths = [int(x.strip()) for x in params.custom_depths.split(',')]
         print(f"Using custom depths: {custom_depths}")
+    
+    if params.stage_types is not None:
+        stage_types = [x.strip() for x in params.stage_types.split(',')]
+        print(f"Using stage types: {stage_types}")
     
     model = HybridMamba(
         in_chans=params.in_chans,
@@ -81,9 +94,14 @@ def main():
         drop_rate = params.dropout,
         hybrid_mode = params.hybrid_mode,
         custom_depths = custom_depths,
+        stage_types = stage_types,
+        num_classes = params.num_classes,
     )
     trainer = Trainer(params, data_loader, model)
-    trainer.train_for_binaryclass()
+    if params.task_type == 'binary':
+        trainer.train_for_binaryclass()
+    else:
+        trainer.train_for_multiclass()
     pretrained_dataset.db.close()
 
 

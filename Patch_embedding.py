@@ -17,13 +17,13 @@ class PatchEmbedding(nn.Module):
             nn.GroupNorm(5, 25),
             nn.GELU(),
 
-            # nn.Conv2d(in_channels=25, out_channels=25, kernel_size=(1, 3), stride=(1, 1), padding=(0, 1)),
-            # nn.GroupNorm(5, 25),
-            # nn.GELU(),
+            nn.Conv2d(in_channels=25, out_channels=25, kernel_size=(1, 3), stride=(1, 1), padding=(0, 1)),
+            nn.GroupNorm(5, 25),
+            nn.GELU(),
 
-            # nn.Conv2d(in_channels=25, out_channels=25, kernel_size=(1, 3), stride=(1, 1), padding=(0, 1)),
-            # nn.GroupNorm(5, 25),
-            # nn.GELU(),
+            nn.Conv2d(in_channels=25, out_channels=25, kernel_size=(1, 3), stride=(1, 1), padding=(0, 1)),
+            nn.GroupNorm(5, 25),
+            nn.GELU(),
         )
         self.spectral_proj = nn.Sequential(
             nn.Linear(101, d_model),

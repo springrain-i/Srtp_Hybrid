@@ -7,35 +7,6 @@ from einops import rearrange, repeat
 import math
 from Patch_embedding import PatchEmbedding
 from einops.layers.torch import Rearrange
-# Helper functions from MambaVision (window_partition, window_reverse)
-def window_partition(x, window_size):
-    """
-    Args:
-        x: (B, C, H, W)
-        window_size: window size
-    Returns:
-        local window features (num_windows*B, window_size*window_size, C)
-    """
-    B, C, H, W = x.shape
-    x = x.view(B, C, H // window_size, window_size, W // window_size, window_size)
-    windows = x.permute(0, 2, 4, 3, 5, 1).reshape(-1, window_size*window_size, C)
-    return windows
-
-def window_reverse(windows, window_size, H, W):
-    """
-    Args:
-        windows: local window features (num_windows*B, window_size*window_size, C)
-        window_size: Window size
-        H: Height of image
-        W: Width of image
-    Returns:
-        x: (B, C, H, W)
-    """
-    B = int(windows.shape[0] / (H * W / window_size / window_size))
-    x = windows.reshape(B, H // window_size, W // window_size, window_size, window_size, -1)
-    x = x.permute(0, 5, 1, 3, 2, 4).reshape(B, windows.shape[2], H, W)
-    return x
-
 # Mamba and Attention blocks from MambaVision
 class MambaVisionMixer(nn.Module):
     def __init__(
@@ -231,36 +202,39 @@ class HybridMamba(nn.Module):
                  d_model=200, depths=[2,2,6,2], num_heads=[4,8,10,20],
                  mlp_ratio=4., qkv_bias=True, drop_rate=0., attn_drop_rate=0.,
                  drop_path_rate=0.1, norm_layer=nn.LayerNorm, 
-                 hybrid_mode='alternate', custom_depths=None):
+                 hybrid_mode='alternate', custom_depths=None,stage_types=None, num_classes=2):
         super().__init__()
         self.depths = depths
         self.d_model = d_model
         self.hybrid_mode = hybrid_mode
+        self.num_classes = num_classes
 
         # Contain Positional embedding
         self.patch_embed = PatchEmbedding(in_dim=patch_size, out_dim=out_dim, d_model=d_model,seq_len=in_chans)
         
-
-        #trunc_normal_(self.pos_embed, std=.02) -> 这行代码的作用是对位置嵌入参数进行截断正态分布初始化。 位置嵌入特性: 位置嵌入需要学习位置信息，小的初始值有利于模型学习
-        #上边这个hai不懂，先不要加
-        
         # 简化层数配置 - 减少模型复杂度以便更好地学习
         if custom_depths is not None:
-            simplified_depths = custom_depths  # 使用用户自定义的层数
+            depths = custom_depths  # 使用用户自定义的层数
         elif self.hybrid_mode == 'mamba_first':
-            simplified_depths = [3, 3, 3, 3]  # 总共12层：前6层Mamba，后6层Attention
+            depths = [2, 2, 2, 2]  
+            stage_types = ['mamba','mamba','atten','atten']
         elif self.hybrid_mode == 'attention_first':
-            simplified_depths = [3, 3, 3, 3]  # 总共12层：前6层Attention，后6层Mamba
+            depths = [2, 2, 2, 2]  
+            stage_types = ['atten','atten','mamba','mamba']
         elif self.hybrid_mode == 'alternate':
-            simplified_depths = [3, 3, 3, 3]  # 总共12层：交错使用
+            depths = [2, 2, 2, 2]  
+            stage_types = ['mamba','atten','mamba','atten']
         elif self.hybrid_mode == 'all_mamba':
-            simplified_depths = [3, 3, 3, 3]  # 总共12层：全Mamba
+            depths = [2, 2, 2, 2]  
+            stage_types = ['mamba','mamba','mamba','mamba']
         elif self.hybrid_mode == 'all_attention':
-            simplified_depths = [3, 3, 3, 3]  # 总共12层：全Attention
+            depths = [2, 2, 2, 2]  
+            stage_types = ['atten','atten','atten','atten']
         else:
-            simplified_depths = [1, 2, 2, 1]  # 默认配置，总共6层
+            depths = [2, 2, 2, 2] 
+            stage_types = ['mamba','mamba','atten','atten']
         
-        total_layers = sum(simplified_depths)
+        total_layers = sum(depths)
         print(f"Using {self.hybrid_mode} mode with {total_layers} total layers")
         
         # 根据实际层数计算drop path rate
@@ -269,10 +243,10 @@ class HybridMamba(nn.Module):
         self.blocks = nn.ModuleList()
         layer_idx = 0
         
-        for i in range(len(simplified_depths)):
-            for j in range(simplified_depths[i]):
-                # 根据混合模式决定使用哪种mixer
-                use_attn = self._get_mixer_type(layer_idx, total_layers)
+        for i in range(len(depths)):
+            for j in range(depths[i]):
+                # 根据stage_types决定使用哪种mixer
+                use_attn = True if stage_types[i] == 'atten' else False
                 
                 # 确保 num_heads 能被 d_model 整除
                 effective_num_heads = min(num_heads[i], d_model)
@@ -292,9 +266,9 @@ class HybridMamba(nn.Module):
                         use_attn=use_attn
                     )
                 )
-                # 打印每一层使用的mixer类型（可选）
+                # 打印每一层使用的mixer类型
                 mixer_type = "Attention" if use_attn else "Mamba"
-                print(f"Layer {layer_idx}: {mixer_type}")
+                print(f"Stage {i+1}, Layer {layer_idx}: {mixer_type}")
                 
                 layer_idx += 1        
         self.proj_out = nn.Sequential(
@@ -313,45 +287,12 @@ class HybridMamba(nn.Module):
             nn.Linear(d_model, d_model // 2),
             nn.ReLU(),
             nn.Dropout(0.1),
-            nn.Linear(d_model // 2, 1),
+            nn.Linear(d_model // 2, num_classes),
         )
 
         self.norm = norm_layer(d_model)
 
         self.apply(self._init_weights)
-
-    def _get_mixer_type(self, layer_idx, total_layers):
-        """
-        根据混合模式和层索引决定使用哪种mixer
-        Args:
-            layer_idx: 当前层的索引 (从0开始)
-            total_layers: 总层数
-        Returns:
-            bool: True表示使用Attention, False表示使用Mamba
-        """
-        if self.hybrid_mode == 'alternate':
-            # 交错使用：奇数层用Attention，偶数层用Mamba
-            return layer_idx % 2 != 0
-        
-        elif self.hybrid_mode == 'mamba_first':
-            # 前6层使用Mamba，后6层使用Attention
-            return layer_idx >= 6
-        
-        elif self.hybrid_mode == 'attention_first':
-            # 前一半Attention，后一半Mamba
-            return layer_idx < total_layers // 2
-        
-        elif self.hybrid_mode == 'all_mamba':
-            # 全部使用Mamba
-            return False
-        
-        elif self.hybrid_mode == 'all_attention':
-            # 全部使用Attention
-            return True
-        
-        else:
-            # 默认交错使用
-            return layer_idx % 2 != 0
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -387,6 +328,9 @@ class HybridMamba(nn.Module):
     def forward(self, x):
         x = self.forward_features(x)
         x = self.classifier(x)
-        return x.squeeze(-1)  # 从 (batch, 1) 压缩为 (batch,)
+        if self.num_classes == 1:
+            return x.squeeze(-1)  # 二分类：(batch, 1) -> (batch,)
+        else:
+            return x  # 多分类：保持 (batch, num_classes)
 
 
